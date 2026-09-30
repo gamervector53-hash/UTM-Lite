@@ -87,12 +87,12 @@ jobs:
           cd repack
           zip -qry -9 ../VectorUTM-SE-Lite.ipa Payload
           cd ..
-          test -s VectorUTM-Lite-Fixed.ipa
+          test -s VectorUTM-SE-Lite.ipa
 
       - name: Record build info
         shell: bash
         run: |
-          APP="repack/Payload/UTM.app"
+          APP="$(find repack/Payload -maxdepth 1 -type d -name '*.app' -print -quit)"
           HELPER_PLIST="$(find "$APP" -path '*/iOSHelper.appex/Info.plist' -print -quit || true)"
           {
             echo "VectorUTM SE Lite"
@@ -103,8 +103,8 @@ jobs:
               echo "Helper bundle ID: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$HELPER_PLIST")"
             fi
             echo "Expected installed parent ID: com.jevon.pocket8.55CB4Z939B"
-            echo "IPA size: $(du -h VectorUTM-Lite-Fixed.ipa | cut -f1)"
-            echo "SHA256: $(shasum -a 256 VectorUTM-Lite-Fixed.ipa | awk '{print $1}')"
+            echo "IPA size: $(du -h VectorUTM-SE-Lite.ipa | cut -f1)"
+            echo "SHA256: $(shasum -a 256 VectorUTM-SE-Lite.ipa | awk '{print $1}')"
           } | tee SIZE.txt
           cat SIZE.txt >> "$GITHUB_STEP_SUMMARY"
 
@@ -113,7 +113,7 @@ jobs:
         with:
           name: VectorUTM-SE-Lite-${{ github.run_number }}
           path: |
-            VectorUTM-Lite-Fixed.ipa
+            VectorUTM-SE-Lite.ipa
             SIZE.txt
           compression-level: 0
 
@@ -123,4 +123,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="se-lite-build-${{ github.run_number }}"
-          gh release create "$TAG" VectorUTM-Lite-Fixed.ipa SIZE.txt             --title "VectorUTM SE Lite build ${{ github.run_number }}"             --notes "UTM-SE based lightweight build with SideStore-compatible bundle IDs and maximum ZIP compression."
+          gh release create "$TAG" VectorUTM-SE-Lite.ipa SIZE.txt             --title "VectorUTM SE Lite build ${{ github.run_number }}"             --notes "UTM-SE based lightweight build with SideStore-compatible bundle IDs and maximum ZIP compression."
