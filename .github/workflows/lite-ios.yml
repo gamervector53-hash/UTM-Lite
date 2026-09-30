@@ -42,10 +42,11 @@ jobs:
           unzip -q ../UTM-upstream.ipa
           test -d Payload/UTM.app
 
-      - name: Slim and reuse Pocket8 bundle ID
+      - name: Slim and prepare SideStore-compatible bundle IDs
         shell: bash
         run: |
           APP="repack/Payload/UTM.app"
+          FINAL_PARENT="com.jevon.pocket8.55CB4Z939B"
           echo "Before:"
           du -sh "$APP"
 
@@ -54,7 +55,7 @@ jobs:
 
           HELPER_PLIST="$(find "$APP" -path '*/iOSHelper.appex/Info.plist' -print -quit || true)"
           if [ -n "$HELPER_PLIST" ]; then
-            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.jevon.pocket8.iOSHelper" "$HELPER_PLIST"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${FINAL_PARENT}.iOSHelper" "$HELPER_PLIST"
           fi
 
           find "$APP" -type d -name 'qemu-*-softmmu.framework' -print0 |
@@ -84,6 +85,11 @@ jobs:
           find "$APP" -type d -name '_CodeSignature' -prune -exec rm -rf {} + || true
           find "$APP" -name '.DS_Store' -delete || true
 
+          echo "Main source bundle ID: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+          if [ -n "$HELPER_PLIST" ]; then
+            echo "Helper bundle ID: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$HELPER_PLIST")"
+          fi
+
           echo "After:"
           du -sh "$APP"
 
@@ -91,34 +97,35 @@ jobs:
         shell: bash
         run: |
           cd repack
-          zip -qry -9 ../VectorUTM-Lite.ipa Payload
+          zip -qry -9 ../VectorUTM-Lite-Fixed.ipa Payload
           cd ..
-          test -s VectorUTM-Lite.ipa
+          test -s VectorUTM-Lite-Fixed.ipa
 
       - name: Record build info
         shell: bash
         run: |
           APP="repack/Payload/UTM.app"
+          HELPER_PLIST="$(find "$APP" -path '*/iOSHelper.appex/Info.plist' -print -quit || true)"
           {
-            echo "VectorUTM Lite"
+            echo "VectorUTM Lite Fixed"
             echo "Upstream UTM commit: 7eadb056ae0f91d979059544d0ddcd2d5a40be92"
             echo "Source workflow run: 36090554968"
             echo "Main source bundle ID: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
-            echo "Expected SideStore main ID: com.jevon.pocket8.55CB4Z939B"
-            echo "Installed app tree: $(du -sh "$APP" | cut -f1)"
-            echo "IPA size: $(du -h VectorUTM-Lite.ipa | cut -f1)"
-            echo "Guest backends kept: aarch64, x86_64"
-            echo "JIT: regular UTM iOS build"
-            echo "SHA256: $(shasum -a 256 VectorUTM-Lite.ipa | awk '{print $1}')"
+            if [ -n "$HELPER_PLIST" ]; then
+              echo "Helper bundle ID: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$HELPER_PLIST")"
+            fi
+            echo "Expected installed parent ID: com.jevon.pocket8.55CB4Z939B"
+            echo "IPA size: $(du -h VectorUTM-Lite-Fixed.ipa | cut -f1)"
+            echo "SHA256: $(shasum -a 256 VectorUTM-Lite-Fixed.ipa | awk '{print $1}')"
           } | tee SIZE.txt
           cat SIZE.txt >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: VectorUTM-Lite-${{ github.run_number }}
+          name: VectorUTM-Lite-Fixed-${{ github.run_number }}
           path: |
-            VectorUTM-Lite.ipa
+            VectorUTM-Lite-Fixed.ipa
             SIZE.txt
           compression-level: 0
 
@@ -127,5 +134,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="lite-build-${{ github.run_number }}"
-          gh release create "$TAG" VectorUTM-Lite.ipa SIZE.txt             --title "VectorUTM Lite build ${{ github.run_number }}"             --notes "Low-storage regular UTM iOS JIT build. Source bundle ID: com.jevon.pocket8. Expected SideStore ID: com.jevon.pocket8.55CB4Z939B. Keeps aarch64 and x86_64 guest backends."
+          TAG="lite-build-${{ github.run_number }}-fixed"
+          gh release create "$TAG" VectorUTM-Lite-Fixed.ipa SIZE.txt             --title "VectorUTM Lite Fixed build ${{ github.run_number }}"             --notes "Fixes SideStore installation by making the embedded iOSHelper extension bundle ID use the final parent prefix com.jevon.pocket8.55CB4Z939B."
