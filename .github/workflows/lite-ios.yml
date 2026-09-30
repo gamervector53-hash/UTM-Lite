@@ -1,0 +1,102 @@
+name: Build UTM Lite iOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build lightweight JIT IPA
+    runs-on: macos-26
+    timeout-minutes: 330
+
+    env:
+      BUILD_XCODE_PATH: /Applications/Xcode.app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Xcode
+        shell: bash
+        run: |
+          [[ "$(xcode-select -p)" == "$BUILD_XCODE_PATH"* ]] || sudo xcode-select -s "$BUILD_XCODE_PATH"
+
+      - name: Cache iOS sysroot
+        id: cache-sysroot
+        uses: actions/cache@v4
+        with:
+          path: ./sysroot-ios-arm64
+          key: utm-lite-ios-arm64-${{ hashFiles('scripts/build_dependencies.sh', 'scripts/fixup.sh', 'patches/**') }}
+
+      - name: Install build requirements
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          brew uninstall cmake || true
+          brew install bison pkg-config gettext glib-utils libgpg-error nasm make meson cmake
+          brew install llvm spirv-llvm-translator libxcb libxrandr
+          pip3 install --break-system-packages --user six pyparsing pyyaml setuptools distlib mako
+          gem install --user-install xcpretty
+          rm -f /usr/local/lib/pkgconfig/*.pc
+
+      - name: Build iOS sysroot
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        shell: bash
+        run: ./scripts/build_dependencies.sh -p ios -a arm64
+
+      - name: Build regular UTM with JIT
+        shell: bash
+        run: ./scripts/build_utm.sh -k iphoneos -s iOS -a arm64 -o UTM
+
+      - name: Shrink app and apply Pocket8 bundle ID
+        shell: bash
+        run: bash ./scripts/shrink_lite_ios.sh UTM.xcarchive
+
+      - name: Install IPA packager dependency
+        shell: bash
+        run: brew install ldid
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          perl -0pi -e 's/BUNDLE_ID="com\.utmapp\.UTM"/BUNDLE_ID="com.jevon.pocket8"/' scripts/package.sh
+          ./scripts/package.sh ipa UTM.xcarchive .
+
+      - name: Recompress IPA
+        shell: bash
+        run: |
+          rm -rf ipa-repack
+          mkdir ipa-repack
+          cd ipa-repack
+          unzip -q ../UTM.ipa
+          zip -qry -9 ../VectorUTM-Lite.ipa Payload
+          cd ..
+          rm -rf ipa-repack UTM.ipa
+
+      - name: Record sizes
+        shell: bash
+        run: |
+          APP="UTM.xcarchive/Products/Applications/UTM.app"
+          {
+            echo "VectorUTM Lite build"
+            echo "Bundle ID: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+            echo "Installed app tree: $(du -sh "$APP" | cut -f1)"
+            echo "IPA: $(du -h VectorUTM-Lite.ipa | cut -f1)"
+            echo "Guest architectures kept: aarch64, x86_64"
+            echo "JIT scheme: iOS (WITH_JIT)"
+          } | tee SIZE.txt
+          cat SIZE.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: VectorUTM-Lite-${{ github.run_number }}
+          path: |
+            VectorUTM-Lite.ipa
+            SIZE.txt
+          compression-level: 0
