@@ -4,95 +4,116 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build:
-    name: Build lightweight JIT IPA
+  repack:
+    name: Repack current UTM JIT IPA
     runs-on: macos-26
-    timeout-minutes: 330
-
-    env:
-      BUILD_XCODE_PATH: /Applications/Xcode.app
+    timeout-minutes: 45
 
     steps:
-      - name: Checkout
+      - name: Checkout fork
         uses: actions/checkout@v4
+
+      - name: Download current upstream UTM IPA
+        uses: actions/download-artifact@v4
         with:
-          submodules: recursive
+          name: UTM.ipa
+          path: upstream
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: utmapp/UTM
+          run-id: 36090554968
 
-      - name: Setup Xcode
+      - name: Locate upstream IPA
         shell: bash
         run: |
-          [[ "$(xcode-select -p)" == "$BUILD_XCODE_PATH"* ]] || sudo xcode-select -s "$BUILD_XCODE_PATH"
+          find upstream -maxdepth 3 -type f -print
+          IPA="$(find upstream -type f -name '*.ipa' -print -quit)"
+          test -n "$IPA"
+          cp "$IPA" UTM-upstream.ipa
 
-      - name: Cache iOS sysroot
-        id: cache-sysroot
-        uses: actions/cache@v4
-        with:
-          path: ./sysroot-ios-arm64
-          key: utm-lite-ios-arm64-${{ hashFiles('scripts/build_dependencies.sh', 'scripts/fixup.sh', 'patches/**') }}
-
-      - name: Install build requirements
-        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+      - name: Unpack
         shell: bash
         run: |
-          brew uninstall cmake || true
-          brew install bison pkg-config gettext glib-utils libgpg-error nasm make meson cmake
-          brew install llvm spirv-llvm-translator libxcb libxrandr
-          pip3 install --break-system-packages --user six pyparsing pyyaml setuptools distlib mako
-          gem install --user-install xcpretty
-          rm -f /usr/local/lib/pkgconfig/*.pc
+          rm -rf repack
+          mkdir repack
+          cd repack
+          unzip -q ../UTM-upstream.ipa
+          test -d Payload/UTM.app
 
-      - name: Build iOS sysroot
-        if: steps.cache-sysroot.outputs.cache-hit != 'true'
-        shell: bash
-        run: ./scripts/build_dependencies.sh -p ios -a arm64
-
-      - name: Build regular UTM with JIT
-        shell: bash
-        run: ./scripts/build_utm.sh -k iphoneos -s iOS -a arm64 -o UTM
-
-      - name: Shrink app and apply Pocket8 bundle ID
-        shell: bash
-        run: bash ./scripts/shrink_lite_ios.sh UTM.xcarchive
-
-      - name: Install IPA packager dependency
-        shell: bash
-        run: brew install ldid
-
-      - name: Package unsigned IPA
+      - name: Slim and reuse Pocket8 bundle ID
         shell: bash
         run: |
-          perl -0pi -e 's/BUNDLE_ID="com\.utmapp\.UTM"/BUNDLE_ID="com.jevon.pocket8"/' scripts/package.sh
-          ./scripts/package.sh ipa UTM.xcarchive .
+          APP="repack/Payload/UTM.app"
+          echo "Before:"
+          du -sh "$APP"
 
-      - name: Recompress IPA
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.jevon.pocket8" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName UTM Lite" "$APP/Info.plist" || true
+
+          HELPER_PLIST="$(find "$APP" -path '*/iOSHelper.appex/Info.plist' -print -quit || true)"
+          if [ -n "$HELPER_PLIST" ]; then
+            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.jevon.pocket8.iOSHelper" "$HELPER_PLIST"
+          fi
+
+          find "$APP" -type d -name 'qemu-*-softmmu.framework' -print0 |
+          while IFS= read -r -d '' FW; do
+            case "$(basename "$FW")" in
+              qemu-aarch64-softmmu.framework|qemu-x86_64-softmmu.framework)
+                echo "Keeping $(basename "$FW")"
+                ;;
+              *)
+                echo "Removing $(basename "$FW")"
+                rm -rf "$FW"
+                ;;
+            esac
+          done
+
+          find "$APP" -type d -name '*.lproj' -print0 |
+          while IFS= read -r -d '' LPROJ; do
+            case "$(basename "$LPROJ")" in
+              en.lproj|Base.lproj)
+                ;;
+              *)
+                rm -rf "$LPROJ"
+                ;;
+            esac
+          done
+
+          find "$APP" -type d -name '_CodeSignature' -prune -exec rm -rf {} + || true
+          find "$APP" -name '.DS_Store' -delete || true
+
+          echo "After:"
+          du -sh "$APP"
+
+      - name: Build maximum-compression IPA
         shell: bash
         run: |
-          rm -rf ipa-repack
-          mkdir ipa-repack
-          cd ipa-repack
-          unzip -q ../UTM.ipa
+          cd repack
           zip -qry -9 ../VectorUTM-Lite.ipa Payload
           cd ..
-          rm -rf ipa-repack UTM.ipa
+          test -s VectorUTM-Lite.ipa
 
-      - name: Record sizes
+      - name: Record build info
         shell: bash
         run: |
-          APP="UTM.xcarchive/Products/Applications/UTM.app"
+          APP="repack/Payload/UTM.app"
           {
-            echo "VectorUTM Lite build"
-            echo "Bundle ID: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+            echo "VectorUTM Lite"
+            echo "Upstream UTM commit: 7eadb056ae0f91d979059544d0ddcd2d5a40be92"
+            echo "Source workflow run: 36090554968"
+            echo "Main source bundle ID: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+            echo "Expected SideStore main ID: com.jevon.pocket8.55CB4Z939B"
             echo "Installed app tree: $(du -sh "$APP" | cut -f1)"
-            echo "IPA: $(du -h VectorUTM-Lite.ipa | cut -f1)"
-            echo "Guest architectures kept: aarch64, x86_64"
-            echo "JIT scheme: iOS (WITH_JIT)"
+            echo "IPA size: $(du -h VectorUTM-Lite.ipa | cut -f1)"
+            echo "Guest backends kept: aarch64, x86_64"
+            echo "JIT: regular UTM iOS build"
+            echo "SHA256: $(shasum -a 256 VectorUTM-Lite.ipa | awk '{print $1}')"
           } | tee SIZE.txt
           cat SIZE.txt >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload IPA
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: VectorUTM-Lite-${{ github.run_number }}
@@ -100,3 +121,11 @@ jobs:
             VectorUTM-Lite.ipa
             SIZE.txt
           compression-level: 0
+
+      - name: Publish direct IPA release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="lite-build-${{ github.run_number }}"
+          gh release create "$TAG" VectorUTM-Lite.ipa SIZE.txt             --title "VectorUTM Lite build ${{ github.run_number }}"             --notes "Low-storage regular UTM iOS JIT build. Source bundle ID: com.jevon.pocket8. Expected SideStore ID: com.jevon.pocket8.55CB4Z939B. Keeps aarch64 and x86_64 guest backends."
