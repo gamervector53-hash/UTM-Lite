@@ -1,0 +1,22 @@
+name: Hypervisor entitlement audit
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/hypervisor-entitlement-audit.yml'
+jobs:
+  audit:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect hypervisor entitlement references
+        shell: bash
+        run: |
+          echo 'Checking Xcode and signing tools'
+          xcodebuild -version
+          codesign --version || true
+          echo 'References to hypervisor entitlements in the repository:'
+          git grep -n -E 'com\.apple\.(private\.)?hypervisor|com\.apple\.security\.virtualization|ios_hv\.entitlements' || true
+          echo 'Audit only: no entitlement grant, device modification, or resigning performed.'
